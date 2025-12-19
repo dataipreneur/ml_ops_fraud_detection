@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
   schedule:
     - cron: '0 0 1 * *'  # Run monthly on the 1st day of the month
 
@@ -44,26 +45,29 @@ jobs:
     - uses: actions/checkout@v3
       with:
         lfs: true
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.9
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
     - name: Download model artifacts
       uses: actions/download-artifact@v3
       with:
         name: model-artifacts
         path: .
     - name: Build Docker image
-      run: docker build -t fraud-detection-app .
-    - name: Deploy to VPS
+      run: docker build -t fraud-detection-app -f api/Dockerfile .
+    - name: Deploy locally or to VPS
       env:
+        DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET || 'local' }}
         VPS_HOST: ${{ secrets.VPS_HOST }}
         VPS_USER: ${{ secrets.VPS_USER }}
         VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
       run: |
-        docker save fraud-detection-app | bzip2 | ssh $VPS_USER@$VPS_HOST 'bunzip2 | docker load'
-        ssh $VPS_USER@$VPS_HOST 'docker run -d --rm --name fraud-detection-app -p 8000:8000 fraud-detection-app'
+        if [ "$DEPLOY_TARGET" = "vps" ]; then
+          echo "Deploying to VPS..."
+          docker save fraud-detection-app | bzip2 | ssh $VPS_USER@$VPS_HOST 'bunzip2 | docker load'
+          ssh $VPS_USER@$VPS_HOST 'docker stop fraud-detection-app || true && docker rm fraud-detection-app || true'
+          ssh $VPS_USER@$VPS_HOST 'docker run -d --name fraud-detection-app -p 8000:8000 fraud-detection-app'
+        else
+          echo "Deploying locally..."
+          docker stop fraud-detection-app || true
+          docker rm fraud-detection-app || true
+          docker run -d --name fraud-detection-app -p 8000:8000 fraud-detection-app
+          echo "App deployed at http://localhost:8000"
+        fi

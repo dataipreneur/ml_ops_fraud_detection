@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  mlflow:
+    image: python:3.9-slim
+    container_name: mlflow-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlflow/mlruns
+      - ./mlartifacts:/mlflow/mlartifacts
+    working_dir: /mlflow
+    command: >
+      sh -c "pip install mlflow &&
+             mlflow server
+             --host 0.0.0.0
+             --port 5000
+             --backend-store-uri file:///mlflow/mlruns
+             --default-artifact-root file:///mlflow/mlartifacts"
+    networks:
+      - mlops-network
+
+  fraud-detector:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: fraud-app
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_URI=./model/saved_models/model.pkl
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./mlruns:/app/mlruns
+      - ./mlartifacts:/app/mlartifacts
+    depends_on:
+      - mlflow
+    networks:
+      - mlops-network
+
+networks:
+  mlops-network:
+    driver: bridge

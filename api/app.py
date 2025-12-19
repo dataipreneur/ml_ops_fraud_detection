@@ -3,6 +3,7 @@ import mlflow
 import pandas as pd
 import os
 import logging
+import joblib
 from mlflow.pyfunc import load_model
 from flask_basicauth import BasicAuth
 
@@ -17,16 +18,33 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Environment variables and default values
 MODEL_URI = os.getenv('MODEL_URI', 'models:/fraud_detection/Production')
+MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', None)
 SERVER_PORT = os.getenv('PORT', '8000')
 DEBUG_MODE = os.getenv('DEBUG', 'False').lower() == 'true'
 
+# Set MLflow tracking URI if provided
+if MLFLOW_TRACKING_URI:
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    logging.info(f"MLflow tracking URI set to: {MLFLOW_TRACKING_URI}")
+
 # Load the model
 try:
-    model = load_model(MODEL_URI)
-    logging.info("Model loaded successfully.")
+    # Check if MODEL_URI is a pickle file or MLflow model
+    if MODEL_URI.endswith('.pkl'):
+        model = joblib.load(MODEL_URI)
+        logging.info(f"Model loaded successfully from joblib file: {MODEL_URI}")
+    else:
+        model = load_model(MODEL_URI)
+        logging.info(f"Model loaded successfully from MLflow Model Registry: {MODEL_URI}")
 except Exception as e:
-    logging.error(f"Error loading model: {e}")
-    model = None
+    logging.error(f"Error loading model from {MODEL_URI}: {e}")
+    logging.warning("Attempting to load from fallback pickle file...")
+    try:
+        model = joblib.load('./model/saved_models/model.pkl')
+        logging.info("Model loaded successfully from fallback pickle file")
+    except Exception as fallback_error:
+        logging.error(f"Fallback also failed: {fallback_error}")
+        model = None
 
 @app.route('/')
 @basic_auth.required
@@ -50,19 +68,22 @@ def predict():
                            'V11', 'V12', 'V13', 'V14', 'V15', 'V16', 'V17', 'V18', 'V19', 'V20',
                            'V21', 'V22', 'V23', 'V24', 'V25', 'V26', 'V27', 'V28', 'Amount']
 
-        if not all(field in data for field in required_fields):
-            return jsonify({'error': 'Missing required fields in input data'}), 400
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {missing_fields}'}), 400
 
-        df = pd.DataFrame([data])
-        prediction = model.predict(df)[0]  # Probability of class 1 (fraud)
+        # Convert string values to floats
+        data_numeric = {k: float(v) for k, v in data.items()}
+
+        df = pd.DataFrame([data_numeric])
+        prediction = model.predict(df)[0]  # Class prediction (0 or 1)
         logging.info(f"Prediction: {prediction}")
-        is_fraud = prediction > 0.5
+        is_fraud = bool(prediction)
 
         # Log prediction and input data for monitoring
-        logging.info(f"Input data: {data}")
         logging.info(f"Prediction: {prediction}, Is Fraud: {is_fraud}")
 
-        return jsonify({'prediction': prediction, 'is_fraud': is_fraud})
+        return jsonify({'prediction': int(prediction), 'is_fraud': is_fraud})
     except Exception as e:
         logging.error(f"Error during prediction: {e}")
         return jsonify({'error': 'An error occurred during prediction'}), 500

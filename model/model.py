@@ -105,6 +105,12 @@ def save_model(model, model_save_path):
         logging.error(f"Error saving model: {e}")
 
 if __name__ == '__main__':
+    # Set MLflow tracking URI if provided
+    mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', None)
+    if mlflow_uri:
+        mlflow.set_tracking_uri(mlflow_uri)
+        logging.info(f"MLflow tracking URI set to: {mlflow_uri}")
+
     mlflow.set_experiment("fraud_detection")
 
     data_path = os.getenv('DATA_PATH', 'data/creditcard.csv')
@@ -135,11 +141,35 @@ if __name__ == '__main__':
         mlflow.log_metric("roc_auc", metrics['roc_auc'])
         mlflow.log_metric("auprc", metrics['auprc'])
 
-        # Log model
-        log_model(model, "model")
+        # Log model with signature and input example
+        input_example = X_simulated[:1]  # Use first row as example
+        model_info = log_model(
+            model,
+            "model",
+            input_example=input_example,
+            registered_model_name="fraud_detection"
+        )
 
         # Save the model locally
         save_model(model, model_save_path)
 
         logging.info(f"Model training completed with accuracy: {metrics['accuracy']}, ROC AUC: {metrics['roc_auc']}, AUPRC: {metrics['auprc']}")
         logging.info(metrics['classification_report'])
+
+        # Promote model to Production stage
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+
+        # Get the latest version
+        model_name = "fraud_detection"
+        latest_versions = client.get_latest_versions(model_name, stages=["None"])
+        if latest_versions:
+            latest_version = latest_versions[0].version
+            # Transition to Production
+            client.transition_model_version_stage(
+                name=model_name,
+                version=latest_version,
+                stage="Production",
+                archive_existing_versions=True
+            )
+            logging.info(f"Model version {latest_version} promoted to Production stage")

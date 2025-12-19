@@ -153,3 +153,7 @@ cython_debug/
 .vscode/
 mlruns/
 /myenv
+
+# MLflow
+mlflow.db
+mlartifacts/

@@ -1,6 +1,6 @@
 pandas==1.5.3
 numpy
-scikit-learn
+scikit-learn==1.4.2
 flask
 joblib
 mlflow
