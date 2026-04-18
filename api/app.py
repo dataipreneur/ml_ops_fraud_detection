@@ -4,8 +4,10 @@ import pandas as pd
 import os
 import logging
 import joblib
+import time
 from mlflow.pyfunc import load_model
 from flask_basicauth import BasicAuth
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 app.config['BASIC_AUTH_USERNAME'] = os.environ.get('AUTH_USERNAME', 'admin')
@@ -15,6 +17,14 @@ basic_auth = BasicAuth(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Prometheus metrics
+prediction_counter = Counter('fraud_predictions_total', 'Total number of predictions', ['prediction_type'])
+inference_latency = Histogram('fraud_model_inference_latency_seconds', 'Model inference latency in seconds')
+fraud_detected = Counter('fraud_detected_total', 'Total number of frauds detected')
+non_fraud_detected = Counter('non_fraud_detected_total', 'Total number of non-frauds detected')
+prediction_errors = Counter('prediction_errors_total', 'Total number of prediction errors')
+model_loaded = Gauge('fraud_model_loaded', 'Whether the model is loaded (1=loaded, 0=not loaded)')
 
 # Environment variables and default values
 MODEL_URI = os.getenv('MODEL_URI', 'models:/fraud_detection/Production')
@@ -36,20 +46,28 @@ try:
     else:
         model = load_model(MODEL_URI)
         logging.info(f"Model loaded successfully from MLflow Model Registry: {MODEL_URI}")
+    model_loaded.set(1)
 except Exception as e:
     logging.error(f"Error loading model from {MODEL_URI}: {e}")
     logging.warning("Attempting to load from fallback pickle file...")
     try:
         model = joblib.load('./model/saved_models/model.pkl')
         logging.info("Model loaded successfully from fallback pickle file")
+        model_loaded.set(1)
     except Exception as fallback_error:
         logging.error(f"Fallback also failed: {fallback_error}")
         model = None
+        model_loaded.set(0)
 
 @app.route('/')
 @basic_auth.required
 def index():
     return render_template('index.html')
+
+@app.route('/metrics')
+def metrics():
+    """Prometheus metrics endpoint."""
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
 @app.route('/predict', methods=['POST'])
 @basic_auth.required
@@ -76,16 +94,33 @@ def predict():
         data_numeric = {k: float(v) for k, v in data.items()}
 
         df = pd.DataFrame([data_numeric])
+
+        # Track inference latency
+        start_time = time.time()
         prediction = model.predict(df)[0]  # Class prediction (0 or 1)
+        inference_time = time.time() - start_time
+
+        # Record metrics
+        inference_latency.observe(inference_time)
+
         logging.info(f"Prediction: {prediction}")
         is_fraud = bool(prediction)
 
+        # Track prediction types
+        if is_fraud:
+            fraud_detected.inc()
+            prediction_counter.labels(prediction_type='fraud').inc()
+        else:
+            non_fraud_detected.inc()
+            prediction_counter.labels(prediction_type='non_fraud').inc()
+
         # Log prediction and input data for monitoring
-        logging.info(f"Prediction: {prediction}, Is Fraud: {is_fraud}")
+        logging.info(f"Prediction: {prediction}, Is Fraud: {is_fraud}, Inference Time: {inference_time:.4f}s")
 
         return jsonify({'prediction': int(prediction), 'is_fraud': is_fraud})
     except Exception as e:
         logging.error(f"Error during prediction: {e}")
+        prediction_errors.inc()
         return jsonify({'error': 'An error occurred during prediction'}), 500
 
 if __name__ == '__main__':
